@@ -21,6 +21,8 @@ export default {
       dataActions: 'Data',
       toolActions: 'Tools',
       viewColumns: 'Columns',
+      compactColumns: 'Compact',
+      allColumns: 'All',
       selectedCount: '{count} selected',
       dataExportConfirmMessage: 'The exported data contains sensitive account and proxy information. Store it securely.',
       dataExportConfirm: 'Confirm Export',

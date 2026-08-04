@@ -805,6 +805,24 @@ func TestSchedulerSnapshotServicePollOutboxHealthyEmptyBatchSkipsLagHealthQuerie
 	}
 }
 
+func TestSchedulerSnapshotServicePollOutboxEmptyBatchCleansConsumedRows(t *testing.T) {
+	cache := &outboxCleanupCache{watermark: 2}
+	repo := &outboxCleanupRepo{
+		rows:         []int64{1, 2, 3},
+		lockAcquired: true,
+	}
+	svc := NewSchedulerSnapshotService(cache, repo, nil, nil, nil)
+
+	svc.pollOutbox()
+
+	if !reflect.DeepEqual(repo.rows, []int64{3}) {
+		t.Fatalf("expected rows at or below the watermark to be removed, got %#v", repo.rows)
+	}
+	if len(repo.deleteCalls) != 1 || repo.deleteCalls[0].watermark != 2 {
+		t.Fatalf("expected one cleanup at watermark 2, got %#v", repo.deleteCalls)
+	}
+}
+
 func TestSchedulerSnapshotServiceEmptyPollDoesNotReleaseRunningRebuild(t *testing.T) {
 	baseCache := &outboxCleanupCache{
 		watermark:   1,

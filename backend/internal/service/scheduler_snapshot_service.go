@@ -372,9 +372,9 @@ func (s *SchedulerSnapshotService) pollOutbox() {
 		return
 	}
 	if len(events) == 0 {
-		// The outbox query itself proves there is no event after the watermark.
-		// Clear degraded/retry state without adding two more repository queries to
-		// the healthy one-second poll path.
+		// The outbox query proves there is no event after the watermark. Use that
+		// same watermark to remove any consumed rows left past the grace window.
+		s.cleanupConsumedOutbox(watermark)
 		s.clearOutboxDegradedEpisode()
 		return
 	}

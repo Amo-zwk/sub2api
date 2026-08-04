@@ -502,6 +502,19 @@ func ProvideScheduledTestRunnerService(
 	return svc
 }
 
+// ProvideAccountHealthController creates and starts the hot-reloadable account health controller.
+func ProvideAccountHealthController(
+	repo AccountHealthRepository,
+	accountRepo AccountRepository,
+	accountTestSvc *AccountTestService,
+	rateLimitSvc *RateLimitService,
+	settingRepo SettingRepository,
+) *AccountHealthController {
+	svc := NewAccountHealthController(repo, accountRepo, accountTestSvc, rateLimitSvc, settingRepo)
+	svc.Start()
+	return svc
+}
+
 // ProvideOpsScheduledReportService creates and starts OpsScheduledReportService.
 func ProvideOpsScheduledReportService(
 	opsService *OpsService,
@@ -775,6 +788,7 @@ var ProviderSet = wire.NewSet(
 	ProvideIdempotencyCleanupService,
 	ProvideScheduledTestService,
 	ProvideScheduledTestRunnerService,
+	ProvideAccountHealthController,
 	NewGroupCapacityService,
 	NewChannelService,
 	NewModelPricingResolver,

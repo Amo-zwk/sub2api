@@ -131,6 +131,8 @@ function mountView() {
 describe('admin AccountsView usage windows hint', () => {
   beforeEach(() => {
     localStorage.clear()
+    localStorage.setItem('account-hidden-columns', JSON.stringify([]))
+    localStorage.setItem('account-hidden-columns-version', 'compact-account-table-v1')
 
     listAccounts.mockReset()
     listWithEtag.mockReset()
