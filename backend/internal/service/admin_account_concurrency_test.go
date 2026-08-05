@@ -15,6 +15,6 @@ func TestNormalizeAccountConcurrencyDefaultsInvalidGrokOAuthToOne(t *testing.T) 
 
 func TestNormalizeAccountConcurrencyPreservesExplicitValues(t *testing.T) {
 	require.Equal(t, 50, normalizeAccountConcurrency(PlatformGrok, AccountTypeOAuth, 50))
-	require.Equal(t, 2, normalizeAccountConcurrency(PlatformOpenAI, AccountTypeOAuth, 2))
+	require.Equal(t, 30, normalizeAccountConcurrency(PlatformOpenAI, AccountTypeOAuth, 2))
 	require.Equal(t, 2, normalizeAccountConcurrency(PlatformGrok, AccountTypeAPIKey, 2))
 }

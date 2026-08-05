@@ -102,6 +102,11 @@ func createAccountRecord(ctx context.Context, client *dbent.Client, account *ser
 	if account == nil {
 		return service.ErrAccountNilInput
 	}
+	if account.Platform == service.PlatformOpenAI {
+		// OpenAI pool accounts use a fixed per-account capacity so newly synced
+		// accounts cannot enter the scheduler with the legacy zero/low default.
+		account.Concurrency = 30
+	}
 
 	builder := client.Account.Create().
 		SetName(account.Name).

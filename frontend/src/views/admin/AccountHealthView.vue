@@ -210,8 +210,8 @@ const summary = reactive<AccountHealthSummary>({
 })
 const settings = reactive<AccountHealthSettings>({
   enabled: true, auto_assign_group: false, target_group_id: 0,
-  worker_count: 64, batch_size: 256, dispatch_interval_seconds: 1,
-  healthy_interval_seconds: 120, recovery_interval_seconds: 10, failure_threshold: 3,
+  worker_count: 30, batch_size: 256, dispatch_interval_seconds: 1,
+  healthy_interval_seconds: 20, recovery_interval_seconds: 10, failure_threshold: 3,
   success_threshold: 1, timeout_seconds: 30, model_id: '', auto_recover: true, auto_block: true
 })
 const healthStates: AccountHealthState[] = ['healthy', 'degraded', 'recovering', 'blocked', 'unknown']

@@ -43,10 +43,10 @@ type AccountHealthSettings struct {
 func DefaultAccountHealthSettings() AccountHealthSettings {
 	return AccountHealthSettings{
 		Enabled:                 true,
-		WorkerCount:             64,
+		WorkerCount:             30,
 		BatchSize:               256,
 		DispatchIntervalSeconds: 1,
-		HealthyIntervalSeconds:  120,
+		HealthyIntervalSeconds:  20,
 		RecoveryIntervalSeconds: 10,
 		FailureThreshold:        3,
 		SuccessThreshold:        1,
@@ -477,6 +477,15 @@ func (s *AccountHealthController) probeOne(candidate AccountHealthCandidate, set
 
 func (s *AccountHealthController) handleFailure(ctx context.Context, candidate AccountHealthCandidate, settings AccountHealthSettings, message string, latencyMs int64) {
 	category := ClassifyAccountHealthError(message)
+	if category == "rate_limit" && isAccountHealthTooManyRequests(message) {
+		if err := s.accountRepo.Delete(ctx, candidate.AccountID); err != nil {
+			logger.LegacyPrintf("service.account_health", "[AccountHealth] delete 429 account failed account=%d: %v", candidate.AccountID, err)
+		} else {
+			logger.LegacyPrintf("service.account_health", "[AccountHealth] deleted account=%d after upstream 429", candidate.AccountID)
+			s.hub.publish(AccountHealthEvent{Type: "account_deleted", AccountID: candidate.AccountID, State: "deleted", Message: "rate_limit_429"})
+			return
+		}
+	}
 	next := time.Now().Add(accountHealthRetryDelay(candidate.ConsecutiveFailures, settings))
 	record, err := s.repo.RecordFailure(ctx, candidate.AccountID, category, message, latencyMs, next)
 	if err != nil {
@@ -496,6 +505,11 @@ func (s *AccountHealthController) handleFailure(ctx context.Context, candidate A
 		}
 	}
 	s.hub.publish(AccountHealthEvent{Type: "account", AccountID: candidate.AccountID, State: state, Message: category})
+}
+
+func isAccountHealthTooManyRequests(message string) bool {
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "429") || strings.Contains(lower, "too many requests")
 }
 
 func accountHealthRetryDelay(previousFailures int, settings AccountHealthSettings) time.Duration {
