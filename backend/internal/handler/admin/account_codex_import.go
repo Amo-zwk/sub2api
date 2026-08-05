@@ -377,6 +377,13 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 		})
 	}
 
+	healthAccountIDs := make([]int64, 0, result.Created+result.Updated)
+	for _, imported := range result.Items {
+		if imported.AccountID > 0 && (imported.Action == "created" || imported.Action == "updated") {
+			healthAccountIDs = append(healthAccountIDs, imported.AccountID)
+		}
+	}
+	h.notifyAccountHealth(ctx, healthAccountIDs, true)
 	return result, nil
 }
 

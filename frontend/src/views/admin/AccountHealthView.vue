@@ -211,10 +211,16 @@ const summary = reactive<AccountHealthSummary>({
 const settings = reactive<AccountHealthSettings>({
   enabled: true, auto_assign_group: false, target_group_id: 0,
   worker_count: 64, batch_size: 256, dispatch_interval_seconds: 1,
-  healthy_interval_seconds: 120, recovery_interval_seconds: 10, failure_threshold: 3,
-  success_threshold: 1, timeout_seconds: 30, model_id: '', auto_recover: true, auto_block: true
+  healthy_interval_seconds: 900, recovery_interval_seconds: 10,
+  auth_interval_seconds: 1800, entitlement_interval_seconds: 21600,
+  permission_interval_seconds: 3600, reconcile_interval_seconds: 600, max_probe_qps: 32,
+  failure_threshold: 3, success_threshold: 3, timeout_seconds: 30,
+  model_id: '', auto_recover: true, auto_block: true
 })
-const healthStates: AccountHealthState[] = ['healthy', 'degraded', 'recovering', 'blocked', 'unknown']
+const healthStates: AccountHealthState[] = [
+  'healthy', 'probation', 'transient_error', 'auth_quarantine',
+  'entitlement_quarantine', 'permission_quarantine', 'unknown'
+]
 
 const summaryMetrics = computed(() => [
   { key: 'total', label: t('admin.accountHealth.summary.total'), value: summary.total, color: 'text-gray-900 dark:text-white' },
@@ -236,6 +242,11 @@ const numericSettings = computed<Array<{ key: NumericSettingKey; label: string; 
   { key: 'dispatch_interval_seconds', label: t('admin.accountHealth.settings.dispatchInterval'), min: 1, max: 60 },
   { key: 'healthy_interval_seconds', label: t('admin.accountHealth.settings.healthyInterval'), min: 15, max: 86400 },
   { key: 'recovery_interval_seconds', label: t('admin.accountHealth.settings.recoveryInterval'), min: 3, max: 3600 },
+  { key: 'auth_interval_seconds', label: t('admin.accountHealth.settings.authInterval'), min: 60, max: 86400 },
+  { key: 'entitlement_interval_seconds', label: t('admin.accountHealth.settings.entitlementInterval'), min: 300, max: 604800 },
+  { key: 'permission_interval_seconds', label: t('admin.accountHealth.settings.permissionInterval'), min: 60, max: 86400 },
+  { key: 'reconcile_interval_seconds', label: t('admin.accountHealth.settings.reconcileInterval'), min: 60, max: 86400 },
+  { key: 'max_probe_qps', label: t('admin.accountHealth.settings.maxProbeQps'), min: 1, max: 1000 },
   { key: 'failure_threshold', label: t('admin.accountHealth.settings.failureThreshold'), min: 1, max: 20 },
   { key: 'success_threshold', label: t('admin.accountHealth.settings.successThreshold'), min: 1, max: 10 },
   { key: 'timeout_seconds', label: t('admin.accountHealth.settings.timeout'), min: 5, max: 300 }
@@ -352,6 +363,7 @@ function scheduleLiveRefresh() {
 }
 
 async function connectEventStream() {
+  let reconnectDelay = 1500
   while (active) {
     streamController = new AbortController()
     try {
@@ -363,6 +375,7 @@ async function connectEventStream() {
       })
       if (!response.ok || !response.body) throw new Error(`SSE ${response.status}`)
       streamConnected.value = true
+      reconnectDelay = 1500
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
@@ -379,7 +392,11 @@ async function connectEventStream() {
     } finally {
       streamConnected.value = false
     }
-    if (active) await new Promise(resolve => setTimeout(resolve, 1500))
+    if (active) {
+      const jitter = Math.floor(Math.random() * Math.min(1000, reconnectDelay / 2))
+      await new Promise(resolve => setTimeout(resolve, reconnectDelay + jitter))
+      reconnectDelay = Math.min(30000, Math.round(reconnectDelay * 1.8))
+    }
   }
 }
 
@@ -440,6 +457,9 @@ onBeforeUnmount(() => {
 .account-meta { margin-top: 3px; color: #9ca3af; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .state-badge { display: inline-flex; align-items: center; height: 24px; padding: 0 9px; border-radius: 4px; font-size: 12px; font-weight: 600; white-space: nowrap; }
 .state-healthy { color: #047857; background: #d1fae5; }
+.state-probation { color: #0369a1; background: #dbeafe; }
+.state-transient_error { color: #b45309; background: #fef3c7; }
+.state-auth_quarantine, .state-entitlement_quarantine, .state-permission_quarantine { color: #b91c1c; background: #fee2e2; }
 .state-degraded { color: #b45309; background: #fef3c7; }
 .state-recovering { color: #0e7490; background: #cffafe; }
 .state-blocked { color: #b91c1c; background: #fee2e2; }

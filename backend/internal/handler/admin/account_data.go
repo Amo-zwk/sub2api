@@ -398,6 +398,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 
 	// 收集需要异步设置隐私的 Antigravity OAuth 账号
 	var privacyAccounts []*service.Account
+	healthAccountIDs := make([]int64, 0, len(dataPayload.Accounts))
 
 	for i := range dataPayload.Accounts {
 		item := dataPayload.Accounts[i]
@@ -461,6 +462,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			privacyAccounts = append(privacyAccounts, created)
 		}
 		h.scheduleGrokImportProbe(created)
+		healthAccountIDs = append(healthAccountIDs, created.ID)
 		result.AccountCreated++
 	}
 
@@ -481,6 +483,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 		}()
 	}
 
+	h.notifyAccountHealth(ctx, healthAccountIDs, true)
 	return result, nil
 }
 

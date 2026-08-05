@@ -239,6 +239,62 @@ func TestSchedulerCacheSetSnapshotByAccountIDsKeepsFencing(t *testing.T) {
 	require.ErrorIs(t, err, service.ErrSchedulerBucketRetired)
 }
 
+func TestSchedulerCacheGetSnapshotWindowSupportsStableAndAdvancingCursors(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 91, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	accounts := make([]service.Account, 5)
+	for i := range accounts {
+		accounts[i] = service.Account{ID: int64(i + 1), Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth}
+	}
+	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	require.NoError(t, err)
+	require.NoError(t, cache.SetSnapshot(ctx, bucket, token, accounts))
+
+	window, total, hit, err := cache.GetSnapshotWindow(ctx, bucket, 2, 4, false)
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.EqualValues(t, 5, total)
+	require.Equal(t, []int64{5, 1}, schedulerAccountIDs(window))
+
+	first, _, hit, err := cache.GetSnapshotWindow(ctx, bucket, 2, 0, true)
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.Equal(t, []int64{1, 2}, schedulerAccountIDs(first))
+	second, _, hit, err := cache.GetSnapshotWindow(ctx, bucket, 2, 0, true)
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.Equal(t, []int64{3, 4}, schedulerAccountIDs(second))
+}
+
+func TestSchedulerCacheGetSnapshotWindowRejectsPartialMetadata(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 92, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	accounts := []service.Account{
+		{ID: 11, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth},
+		{ID: 12, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth},
+	}
+	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	require.NoError(t, err)
+	require.NoError(t, cache.SetSnapshot(ctx, bucket, token, accounts))
+	require.NoError(t, cache.rdb.Del(ctx, schedulerAccountMetaKey("12")).Err())
+
+	window, total, hit, err := cache.GetSnapshotWindow(ctx, bucket, 2, 0, false)
+	require.NoError(t, err)
+	require.False(t, hit)
+	require.EqualValues(t, 2, total)
+	require.Nil(t, window)
+}
+
+func schedulerAccountIDs(accounts []*service.Account) []int64 {
+	ids := make([]int64, 0, len(accounts))
+	for _, account := range accounts {
+		ids = append(ids, account.ID)
+	}
+	return ids
+}
+
 func TestSchedulerCacheSetSnapshotByAccountIDsDoesNotResurrectDeletedAccount(t *testing.T) {
 	ctx := context.Background()
 	cache := newSchedulerCacheUnit(t)

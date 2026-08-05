@@ -1,7 +1,10 @@
 import { apiClient } from '../client'
 import type { PaginatedResponse } from '@/types'
 
-export type AccountHealthState = 'unknown' | 'healthy' | 'degraded' | 'recovering' | 'blocked'
+export type AccountHealthState =
+  | 'unknown' | 'healthy' | 'probation' | 'transient_error'
+  | 'auth_quarantine' | 'entitlement_quarantine' | 'permission_quarantine'
+  | 'degraded' | 'recovering' | 'blocked'
 
 export interface AccountHealthSettings {
   enabled: boolean
@@ -12,6 +15,11 @@ export interface AccountHealthSettings {
   dispatch_interval_seconds: number
   healthy_interval_seconds: number
   recovery_interval_seconds: number
+  auth_interval_seconds: number
+  entitlement_interval_seconds: number
+  permission_interval_seconds: number
+  reconcile_interval_seconds: number
+  max_probe_qps: number
   failure_threshold: number
   success_threshold: number
   timeout_seconds: number
@@ -28,6 +36,11 @@ export interface AccountHealthSummary {
   recovering: number
   blocked: number
   unknown: number
+  probation?: number
+  transient_error?: number
+  auth_quarantine?: number
+  entitlement_quarantine?: number
+  permission_quarantine?: number
   in_flight: number
 }
 

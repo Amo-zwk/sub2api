@@ -12,6 +12,8 @@ export default {
       autoRecover: 'Auto recover scheduling', autoBlock: 'Auto quarantine failures', workers: 'Concurrent workers', batchSize: 'Lease batch size',
       autoAssignGroup: 'Auto-assign accounts', targetGroup: 'Target OpenAI group', targetGroupPlaceholder: 'Select a group',
       dispatchInterval: 'Dispatch interval (s)', healthyInterval: 'Healthy interval (s)', recoveryInterval: 'Retry interval (s)',
+      authInterval: 'Auth retry interval (s)', entitlementInterval: 'Entitlement retry interval (s)',
+      permissionInterval: 'Permission retry interval (s)', reconcileInterval: 'Reconcile interval (s)', maxProbeQps: 'Probe QPS cap',
       failureThreshold: 'Failure threshold', successThreshold: 'Recovery threshold', timeout: 'Probe timeout (s)',
       model: 'Test model', modelHint: 'Leave empty to use the system default test model'
     },
@@ -21,7 +23,11 @@ export default {
       lastProbe: 'Last probe', nextProbe: 'Next probe', latency: 'Latency', eligible: 'Eligible', unavailable: 'Unavailable',
       never: 'Not tested', noError: 'Connection healthy'
     },
-    states: { unknown: 'Untested', healthy: 'Healthy', degraded: 'Degraded', recovering: 'Recovering', blocked: 'Quarantined' },
+    states: {
+      unknown: 'Untested', healthy: 'Healthy', probation: 'Probation', transient_error: 'Transient error',
+      auth_quarantine: 'Auth quarantine', entitlement_quarantine: 'Entitlement quarantine', permission_quarantine: 'Permission quarantine',
+      degraded: 'Degraded', recovering: 'Recovering', blocked: 'Quarantined'
+    },
     messages: { loadFailed: 'Failed to load account health', saveSuccess: 'Health settings applied', runQueued: '{count} accounts queued for health checks' }
   }
 }

@@ -259,6 +259,45 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 	return accounts, useMixed, nil
 }
 
+// ListSchedulableAccountsWindow returns a bounded circular view for the
+// high-throughput scheduler. Cache misses retain the existing DB fallback and
+// snapshot publication behavior, then bound the returned slice in-process.
+func (s *SchedulerSnapshotService) ListSchedulableAccountsWindow(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool, limit int, cursor uint64, advance bool) ([]Account, int64, bool, error) {
+	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
+	if limit <= 0 {
+		accounts, _, err := s.ListSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
+		return accounts, int64(len(accounts)), useMixed, err
+	}
+
+	if windowCache, ok := s.cache.(SchedulerSnapshotWindowCache); ok {
+		bucket := s.bucketFor(groupID, platform, s.resolveMode(platform, hasForcePlatform))
+		cached, total, hit, err := windowCache.GetSnapshotWindow(ctx, bucket, limit, cursor, advance)
+		if err != nil {
+			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] window cache read failed: bucket=%s err=%v", bucket.String(), err)
+		} else if hit {
+			return derefAccounts(cached), total, useMixed, nil
+		}
+	}
+
+	accounts, _, err := s.ListSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
+	if err != nil || len(accounts) <= limit {
+		return accounts, int64(len(accounts)), useMixed, err
+	}
+	return rotateSchedulerAccounts(accounts, limit, cursor), int64(len(accounts)), useMixed, nil
+}
+
+func rotateSchedulerAccounts(accounts []Account, limit int, cursor uint64) []Account {
+	if limit <= 0 || len(accounts) <= limit {
+		return accounts
+	}
+	start := int(cursor % uint64(len(accounts)))
+	out := make([]Account, 0, limit)
+	for i := 0; i < limit; i++ {
+		out = append(out, accounts[(start+i)%len(accounts)])
+	}
+	return out
+}
+
 func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int64) (*Account, error) {
 	if accountID <= 0 {
 		return nil, nil

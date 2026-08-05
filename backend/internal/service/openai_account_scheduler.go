@@ -29,6 +29,7 @@ const (
 const (
 	openAIAdvancedSchedulerSettingCacheTTL  = 5 * time.Second
 	openAIAdvancedSchedulerSettingDBTimeout = 2 * time.Second
+	openAIAdvancedSchedulerWindowSize       = 64
 	// ponytail: cap probes added when cost ordering expands configured Top-K;
 	// use bulk acquisition if a measured workload needs a higher ceiling.
 	openAIAccountSelectionProbeLimit = 64
@@ -1323,7 +1324,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	req OpenAIAccountScheduleRequest,
 ) (*AccountSelectionResult, int, int, float64, error) {
 	budget := newOpenAISelectionProbeBudget()
-	accounts, err := s.service.listSchedulableAccounts(ctx, req.GroupID, req.Platform)
+	accounts, poolTotal, err := s.service.listSchedulableAccountsWindow(ctx, req.GroupID, req.Platform, req.SessionHash, req.RequestedModel, openAIAdvancedSchedulerWindowSize)
 	if err != nil {
 		return nil, 0, 0, 0, err
 	}
@@ -1337,7 +1338,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		schedGroup, _ = s.service.schedulerSnapshot.GetGroupByID(ctx, *req.GroupID)
 	}
 
-	filterStats := openAISelectionFilterStats{pool: len(accounts)}
+	filterStats := openAISelectionFilterStats{pool: poolTotal}
 	filtered := make([]*Account, 0, len(accounts))
 	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
 	for i := range accounts {
@@ -1381,6 +1382,56 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			ID:             account.ID,
 			MaxConcurrency: account.EffectiveLoadFactor(),
 		})
+	}
+	// A capability-specific pool can miss a rotated window. Preserve correctness
+	// by falling back to the full snapshot only for this exceptional empty-window
+	// case; the normal request path remains bounded.
+	if len(filtered) == 0 && poolTotal > len(accounts) {
+		fullPool, fullErr := s.service.listSchedulableAccounts(ctx, req.GroupID, req.Platform)
+		if fullErr != nil {
+			return nil, 0, 0, 0, fullErr
+		}
+		filterStats = openAISelectionFilterStats{pool: len(fullPool)}
+		filtered = make([]*Account, 0, len(fullPool))
+		loadReq = make([]AccountWithConcurrency, 0, len(fullPool))
+		for i := range fullPool {
+			account := &fullPool[i]
+			if req.ExcludedIDs != nil {
+				if _, excluded := req.ExcludedIDs[account.ID]; excluded {
+					filterStats.exclude("excluded")
+					continue
+				}
+			}
+			if !account.IsSchedulable() {
+				filterStats.exclude("not_schedulable")
+				continue
+			}
+			if account.Platform != normalizeOpenAICompatiblePlatform(req.Platform) || !account.IsOpenAICompatible() {
+				filterStats.exclude("platform_mismatch")
+				continue
+			}
+			if s.service.isOpenAIAccountRequestRuntimeBlocked(account, req.RequestedModel) {
+				filterStats.exclude("runtime_blocked")
+				continue
+			}
+			if schedGroup != nil && schedGroup.RequirePrivacySet && !account.IsPrivacySet() {
+				s.service.BlockAccountScheduling(account, time.Time{}, "privacy_not_set")
+				_ = s.service.accountRepo.SetError(ctx, account.ID,
+					fmt.Sprintf("Privacy not set, required by group [%s]", schedGroup.Name))
+				filterStats.exclude("privacy_not_set")
+				continue
+			}
+			if compatible, reason := s.isAccountRequestCompatibleReason(ctx, account, req); !compatible {
+				filterStats.exclude(reason)
+				continue
+			}
+			if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
+				filterStats.exclude("transport_incompatible")
+				continue
+			}
+			filtered = append(filtered, account)
+			loadReq = append(loadReq, AccountWithConcurrency{ID: account.ID, MaxConcurrency: account.EffectiveLoadFactor()})
+		}
 	}
 	if len(filtered) == 0 {
 		return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, false, filterStats.summary(""))
@@ -1441,6 +1492,27 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		return attempt.result, attempt.candidateCount, attempt.topK, attempt.loadSkew, nil
 	}
 	return s.finishLoadBalanceSelectionFallback(ctx, req, attempt, budget, filterStats)
+}
+
+func (s *OpenAIGatewayService) listSchedulableAccountsWindow(ctx context.Context, groupID *int64, platform string, sessionHash string, requestedModel string, limit int) ([]Account, int, error) {
+	platform = normalizeOpenAICompatiblePlatform(platform)
+	if s.schedulerSnapshot == nil || limit <= 0 {
+		accounts, err := s.listSchedulableAccounts(ctx, groupID, platform)
+		return accounts, len(accounts), err
+	}
+
+	advance := strings.TrimSpace(sessionHash) == ""
+	hash := fnv.New64a()
+	_, _ = hash.Write([]byte(platform))
+	_, _ = hash.Write([]byte{0})
+	_, _ = hash.Write([]byte(strings.TrimSpace(requestedModel)))
+	_, _ = hash.Write([]byte{0})
+	_, _ = hash.Write([]byte(strings.TrimSpace(sessionHash)))
+	if groupID != nil {
+		_, _ = hash.Write([]byte(strconv.FormatInt(*groupID, 10)))
+	}
+	accounts, total, _, err := s.schedulerSnapshot.ListSchedulableAccountsWindow(ctx, groupID, platform, false, limit, hash.Sum64(), advance)
+	return accounts, int(total), err
 }
 
 func partitionOpenAIChatGPTSubscriptionAccounts(accounts []*Account) ([]*Account, []*Account) {

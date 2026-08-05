@@ -21,13 +21,136 @@ func NewAccountHealthRepository(db *sql.DB) service.AccountHealthRepository {
 
 func (r *accountHealthRepository) EnsureAccounts(ctx context.Context) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO account_health_states (account_id, state, next_probe_at)
-		SELECT a.id, 'unknown', NOW()
+		INSERT INTO account_health_states (account_id, state, probe_class, next_probe_at)
+		SELECT a.id, 'unknown', 'new', NOW()
 		FROM accounts a
 		WHERE a.deleted_at IS NULL AND a.platform = 'openai'
 		ON CONFLICT (account_id) DO NOTHING
 	`)
 	return err
+}
+
+func (r *accountHealthRepository) CleanupStale(ctx context.Context) (int64, error) {
+	result, err := r.db.ExecContext(ctx, `
+		DELETE FROM account_health_states h
+		WHERE NOT EXISTS (
+			SELECT 1 FROM accounts a
+			WHERE a.id = h.account_id
+			  AND a.deleted_at IS NULL
+			  AND a.platform = 'openai'
+		)
+	`)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func (r *accountHealthRepository) SyncAccounts(ctx context.Context, accountIDs []int64, reset bool, autoAssign bool, groupID int64) (int64, error) {
+	if len(accountIDs) == 0 {
+		return 0, nil
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	ids := pq.Array(accountIDs)
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM account_health_states h
+		WHERE h.account_id = ANY($1)
+		  AND NOT EXISTS (
+			SELECT 1 FROM accounts a
+			WHERE a.id = h.account_id
+			  AND a.deleted_at IS NULL
+			  AND a.platform = 'openai'
+		  )
+	`, ids); err != nil {
+		return 0, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO account_health_states (account_id, state, probe_class, next_probe_at)
+		SELECT a.id, 'unknown', 'new', NOW()
+		FROM accounts a
+		WHERE a.id = ANY($1)
+		  AND a.deleted_at IS NULL
+		  AND a.platform = 'openai'
+		ON CONFLICT (account_id) DO UPDATE
+		SET state = CASE WHEN $2 THEN 'unknown' ELSE account_health_states.state END,
+			probe_class = CASE WHEN $2 THEN 'new' ELSE account_health_states.probe_class END,
+			consecutive_successes = CASE WHEN $2 THEN 0 ELSE account_health_states.consecutive_successes END,
+			consecutive_failures = CASE WHEN $2 THEN 0 ELSE account_health_states.consecutive_failures END,
+			next_probe_at = CASE WHEN $2 THEN NOW() ELSE account_health_states.next_probe_at END,
+			lease_until = CASE WHEN $2 THEN NULL ELSE account_health_states.lease_until END,
+			updated_at = NOW()
+	`, ids, reset); err != nil {
+		return 0, err
+	}
+
+	if !autoAssign {
+		if err := tx.Commit(); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	}
+	if groupID <= 0 {
+		return 0, fmt.Errorf("target_group_id must be positive")
+	}
+	var valid bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM groups
+			WHERE id = $1 AND deleted_at IS NULL AND status = $2 AND platform = $3
+		)
+	`, groupID, service.StatusActive, service.PlatformOpenAI).Scan(&valid); err != nil {
+		return 0, err
+	}
+	if !valid {
+		return 0, fmt.Errorf("target_group_id %d must reference an active OpenAI group", groupID)
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		INSERT INTO account_groups (account_id, group_id, priority)
+		SELECT a.id, $2,
+			COALESCE((SELECT MAX(existing.priority) + 1 FROM account_groups existing WHERE existing.account_id = a.id), 1)
+		FROM accounts a
+		WHERE a.id = ANY($1)
+		  AND a.deleted_at IS NULL
+		  AND a.platform = $3
+		ON CONFLICT (account_id, group_id) DO NOTHING
+		RETURNING account_id
+	`, ids, groupID, service.PlatformOpenAI)
+	if err != nil {
+		return 0, err
+	}
+	assignedIDs := make([]int64, 0, len(accountIDs))
+	for rows.Next() {
+		var accountID int64
+		if err := rows.Scan(&accountID); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		assignedIDs = append(assignedIDs, accountID)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	payload := buildSchedulerGroupPayload([]int64{groupID})
+	for _, accountID := range assignedIDs {
+		id := accountID
+		if err := enqueueSchedulerOutbox(ctx, tx, service.SchedulerOutboxEventAccountGroupsChanged, &id, nil, payload); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int64(len(assignedIDs)), nil
 }
 
 func (r *accountHealthRepository) ValidateTargetGroup(ctx context.Context, groupID int64) error {
@@ -125,7 +248,7 @@ func (r *accountHealthRepository) AssignMissingToGroup(ctx context.Context, grou
 	return int64(len(accountIDs)), nil
 }
 
-func (r *accountHealthRepository) LeaseDue(ctx context.Context, limit int, leaseUntil time.Time) ([]service.AccountHealthCandidate, error) {
+func (r *accountHealthRepository) LeaseDue(ctx context.Context, probeClass string, limit int, leaseUntil time.Time) ([]service.AccountHealthCandidate, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -143,27 +266,25 @@ func (r *accountHealthRepository) LeaseDue(ctx context.Context, limit int, lease
 			WHERE a.deleted_at IS NULL
 			  AND a.platform = 'openai'
 			  AND h.next_probe_at <= NOW()
+			  AND h.probe_class = $3
 			  AND (h.lease_until IS NULL OR h.lease_until <= NOW())
 			  AND (
 				a.status = 'error'
 				OR h.auto_blocked IS TRUE
 				OR (a.status = 'active' AND a.schedulable IS TRUE)
 			  )
-			ORDER BY
-			  CASE WHEN h.auto_blocked OR a.status = 'error' THEN 0 WHEN h.state = 'unknown' THEN 1 ELSE 2 END,
-			  h.next_probe_at,
+			ORDER BY h.next_probe_at,
 			  h.account_id
 			FOR UPDATE OF h SKIP LOCKED
 			LIMIT $1
 		)
 		UPDATE account_health_states h
 		SET lease_until = $2,
-			state = CASE WHEN h.auto_blocked THEN 'recovering' ELSE h.state END,
 			updated_at = NOW()
 		FROM due, accounts a
 		WHERE h.account_id = due.account_id AND a.id = h.account_id
-		RETURNING h.account_id, a.name, a.status, a.schedulable, h.auto_blocked, h.state, h.consecutive_failures
-	`, limit, leaseUntil)
+		RETURNING h.account_id, a.name, a.status, a.schedulable, h.auto_blocked, h.state, h.probe_class, h.consecutive_failures
+	`, limit, leaseUntil, probeClass)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +293,7 @@ func (r *accountHealthRepository) LeaseDue(ctx context.Context, limit int, lease
 	items := make([]service.AccountHealthCandidate, 0, limit)
 	for rows.Next() {
 		var item service.AccountHealthCandidate
-		if err := rows.Scan(&item.AccountID, &item.Name, &item.Status, &item.Schedulable, &item.AutoBlocked, &item.State, &item.ConsecutiveFailures); err != nil {
+		if err := rows.Scan(&item.AccountID, &item.Name, &item.Status, &item.Schedulable, &item.AutoBlocked, &item.State, &item.ProbeClass, &item.ConsecutiveFailures); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -193,7 +314,8 @@ func (r *accountHealthRepository) RecordSuccess(ctx context.Context, accountID i
 	record := &service.AccountHealthRecord{}
 	err := r.db.QueryRowContext(ctx, `
 		UPDATE account_health_states
-		SET state = CASE WHEN consecutive_successes + 1 >= $3 THEN 'healthy' ELSE 'recovering' END,
+		SET state = CASE WHEN consecutive_successes + 1 >= $3 THEN 'healthy' ELSE 'probation' END,
+			probe_class = CASE WHEN consecutive_successes + 1 >= $3 THEN 'healthy_sample' ELSE 'transient' END,
 			error_category = '',
 			error_message = '',
 			consecutive_successes = consecutive_successes + 1,
@@ -205,44 +327,45 @@ func (r *accountHealthRepository) RecordSuccess(ctx context.Context, accountID i
 			lease_until = NULL,
 			updated_at = NOW()
 		WHERE account_id = $1
-		RETURNING state, consecutive_successes, consecutive_failures
-	`, accountID, latencyMs, successThreshold, nextProbe).Scan(&record.State, &record.ConsecutiveSuccesses, &record.ConsecutiveFailures)
+		RETURNING state, probe_class, consecutive_successes, consecutive_failures
+	`, accountID, latencyMs, successThreshold, nextProbe).Scan(&record.State, &record.ProbeClass, &record.ConsecutiveSuccesses, &record.ConsecutiveFailures)
 	return record, err
 }
 
-func (r *accountHealthRepository) RecordFailure(ctx context.Context, accountID int64, category, message string, latencyMs int64, nextProbe time.Time) (*service.AccountHealthRecord, error) {
+func (r *accountHealthRepository) RecordFailure(ctx context.Context, accountID int64, state, probeClass, category, message string, latencyMs int64, nextProbe time.Time) (*service.AccountHealthRecord, error) {
 	record := &service.AccountHealthRecord{}
 	err := r.db.QueryRowContext(ctx, `
 		UPDATE account_health_states
-		SET state = CASE WHEN auto_blocked THEN 'blocked' ELSE 'degraded' END,
-			error_category = $2,
-			error_message = LEFT($3, 2000),
+		SET state = $2,
+			probe_class = $3,
+			error_category = $4,
+			error_message = LEFT($5, 2000),
 			consecutive_successes = 0,
 			consecutive_failures = consecutive_failures + 1,
 			last_probe_at = NOW(),
-			next_probe_at = $5,
-			probe_latency_ms = $4,
+			next_probe_at = $7,
+			probe_latency_ms = $6,
 			lease_until = NULL,
 			updated_at = NOW()
 		WHERE account_id = $1
-		RETURNING state, consecutive_successes, consecutive_failures
-	`, accountID, category, message, latencyMs, nextProbe).Scan(&record.State, &record.ConsecutiveSuccesses, &record.ConsecutiveFailures)
+		RETURNING state, probe_class, consecutive_successes, consecutive_failures
+	`, accountID, state, probeClass, category, message, latencyMs, nextProbe).Scan(&record.State, &record.ProbeClass, &record.ConsecutiveSuccesses, &record.ConsecutiveFailures)
 	return record, err
 }
 
-func (r *accountHealthRepository) MarkAutoBlocked(ctx context.Context, accountID int64) error {
+func (r *accountHealthRepository) MarkAutoBlocked(ctx context.Context, accountID int64, state, probeClass string, nextProbe time.Time) error {
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE account_health_states
-		SET state = 'blocked', auto_blocked = TRUE, lease_until = NULL, updated_at = NOW()
+		SET state = $2, probe_class = $3, auto_blocked = TRUE, next_probe_at = $4, lease_until = NULL, updated_at = NOW()
 		WHERE account_id = $1
-	`, accountID)
+	`, accountID, state, probeClass, nextProbe)
 	return err
 }
 
 func (r *accountHealthRepository) MarkRecovered(ctx context.Context, accountID int64) error {
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE account_health_states
-		SET state = 'healthy', auto_blocked = FALSE, error_category = '', error_message = '', lease_until = NULL, updated_at = NOW()
+		SET state = 'healthy', probe_class = 'healthy_sample', auto_blocked = FALSE, error_category = '', error_message = '', lease_until = NULL, updated_at = NOW()
 		WHERE account_id = $1
 	`, accountID)
 	return err
@@ -251,7 +374,7 @@ func (r *accountHealthRepository) MarkRecovered(ctx context.Context, accountID i
 func (r *accountHealthRepository) ReleaseLease(ctx context.Context, accountID int64, nextProbe time.Time, message string) error {
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE account_health_states
-		SET state = 'recovering', error_category = 'recovery', error_message = LEFT($3, 2000), next_probe_at = $2, lease_until = NULL, updated_at = NOW()
+		SET state = 'transient_error', probe_class = 'transient', error_category = 'recovery', error_message = LEFT($3, 2000), next_probe_at = $2, lease_until = NULL, updated_at = NOW()
 		WHERE account_id = $1
 	`, accountID, nextProbe, message)
 	return err
@@ -268,10 +391,15 @@ func (r *accountHealthRepository) Summary(ctx context.Context, groupID int64) (*
 				AND (a.overload_until IS NULL OR a.overload_until <= NOW())
 				AND (a.temp_unschedulable_until IS NULL OR a.temp_unschedulable_until <= NOW())),
 			COUNT(*) FILTER (WHERE COALESCE(h.state, 'unknown') = 'healthy'),
-			COUNT(*) FILTER (WHERE COALESCE(h.state, 'unknown') = 'degraded'),
-			COUNT(*) FILTER (WHERE COALESCE(h.state, 'unknown') = 'recovering'),
-			COUNT(*) FILTER (WHERE COALESCE(h.state, 'unknown') = 'blocked'),
-			COUNT(*) FILTER (WHERE COALESCE(h.state, 'unknown') = 'unknown')
+			COUNT(*) FILTER (WHERE COALESCE(h.state, 'unknown') = 'transient_error'),
+			COUNT(*) FILTER (WHERE COALESCE(h.state, 'unknown') = 'probation'),
+			COUNT(*) FILTER (WHERE COALESCE(h.state, 'unknown') IN ('auth_quarantine', 'entitlement_quarantine', 'permission_quarantine')),
+			COUNT(*) FILTER (WHERE COALESCE(h.state, 'unknown') = 'unknown'),
+			COUNT(*) FILTER (WHERE COALESCE(h.state, 'unknown') = 'probation'),
+			COUNT(*) FILTER (WHERE COALESCE(h.state, 'unknown') = 'transient_error'),
+			COUNT(*) FILTER (WHERE COALESCE(h.state, 'unknown') = 'auth_quarantine'),
+			COUNT(*) FILTER (WHERE COALESCE(h.state, 'unknown') = 'entitlement_quarantine'),
+			COUNT(*) FILTER (WHERE COALESCE(h.state, 'unknown') = 'permission_quarantine')
 		FROM accounts a
 		LEFT JOIN account_health_states h ON h.account_id = a.id
 		WHERE a.deleted_at IS NULL
@@ -287,6 +415,11 @@ func (r *accountHealthRepository) Summary(ctx context.Context, groupID int64) (*
 		&summary.Recovering,
 		&summary.Blocked,
 		&summary.Unknown,
+		&summary.Probation,
+		&summary.TransientError,
+		&summary.AuthQuarantine,
+		&summary.EntitlementQuarantine,
+		&summary.PermissionQuarantine,
 	)
 	return summary, err
 }
@@ -315,7 +448,7 @@ func (r *accountHealthRepository) List(ctx context.Context, params service.Accou
 			 AND (a.rate_limit_reset_at IS NULL OR a.rate_limit_reset_at <= NOW())
 			 AND (a.overload_until IS NULL OR a.overload_until <= NOW())
 			 AND (a.temp_unschedulable_until IS NULL OR a.temp_unschedulable_until <= NOW())),
-			COALESCE(h.state, 'unknown'), COALESCE(h.auto_blocked, FALSE),
+			COALESCE(h.state, 'unknown'), COALESCE(h.probe_class, 'new'), COALESCE(h.auto_blocked, FALSE),
 			COALESCE(h.error_category, ''), COALESCE(h.error_message, ''),
 			COALESCE(h.consecutive_successes, 0), COALESCE(h.consecutive_failures, 0),
 			h.last_probe_at, h.last_success_at, h.next_probe_at, COALESCE(h.probe_latency_ms, 0),
@@ -326,7 +459,7 @@ func (r *accountHealthRepository) List(ctx context.Context, params service.Accou
 		LEFT JOIN groups g ON g.id = ag.group_id AND g.deleted_at IS NULL
 		%s
 		GROUP BY a.id, h.account_id
-		ORDER BY CASE COALESCE(h.state, 'unknown') WHEN 'blocked' THEN 0 WHEN 'recovering' THEN 1 WHEN 'degraded' THEN 2 WHEN 'unknown' THEN 3 ELSE 4 END,
+		ORDER BY CASE COALESCE(h.state, 'unknown') WHEN 'auth_quarantine' THEN 0 WHEN 'entitlement_quarantine' THEN 1 WHEN 'permission_quarantine' THEN 2 WHEN 'transient_error' THEN 3 WHEN 'probation' THEN 4 WHEN 'unknown' THEN 5 ELSE 6 END,
 		         h.last_probe_at DESC NULLS FIRST, a.id
 		LIMIT $%d OFFSET $%d
 	`, where, limitPos, offsetPos)
@@ -341,7 +474,7 @@ func (r *accountHealthRepository) List(ctx context.Context, params service.Accou
 		var groups pq.StringArray
 		if err := rows.Scan(
 			&item.AccountID, &item.Name, &item.AccountStatus, &item.Schedulable, &item.SchedulerEligible,
-			&item.State, &item.AutoBlocked, &item.ErrorCategory, &item.ErrorMessage,
+			&item.State, &item.ProbeClass, &item.AutoBlocked, &item.ErrorCategory, &item.ErrorMessage,
 			&item.ConsecutiveSuccesses, &item.ConsecutiveFailures, &item.LastProbeAt, &item.LastSuccessAt,
 			&item.NextProbeAt, &item.ProbeLatencyMs, &groups,
 		); err != nil {

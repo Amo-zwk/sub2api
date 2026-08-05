@@ -5290,8 +5290,12 @@ const deleteConfirmMessage = computed(() => {
 const loadLiveCapability = async () => {
   if (liveCapability.value) return liveCapability.value;
   if (!liveCapabilityRequest) {
-    liveCapabilityRequest = adminAPI.groups
-      .getLiveCapability()
+    const getLiveCapability = adminAPI.groups.getLiveCapability;
+    if (typeof getLiveCapability !== "function") {
+      liveCapability.value = { supported: false };
+      return liveCapability.value;
+    }
+    liveCapabilityRequest = getLiveCapability()
       .catch(() => ({ supported: false }))
       .finally(() => {
         liveCapabilityRequest = null;
