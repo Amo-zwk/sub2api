@@ -69,6 +69,25 @@ func TestUpdateServicePerformUpdateNoUpdateReturnsSentinel(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoUpdateAvailable)
 }
 
+func TestCompareVersionsUsesNumericCoreForCustomBuilds(t *testing.T) {
+	tests := []struct {
+		name            string
+		current, latest string
+		want            int
+	}{
+		{name: "same base version", current: "0.1.170-health3", latest: "0.1.170", want: 0},
+		{name: "same base version with prefix", current: "v0.1.170-ui1", latest: "v0.1.170", want: 0},
+		{name: "newer release", current: "0.1.170-health3", latest: "0.1.171", want: -1},
+		{name: "custom build ahead", current: "0.1.171-health1", latest: "0.1.170", want: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, compareVersions(tt.current, tt.latest))
+		})
+	}
+}
+
 func newRollbackTestService(current string, releases []*GitHubRelease) *UpdateService {
 	return NewUpdateService(
 		&updateServiceCacheStub{},

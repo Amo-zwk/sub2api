@@ -1,9 +1,10 @@
 <template>
   <AppLayout>
-    <TablePageLayout>
+    <TablePageLayout class="account-page-layout">
       <template #filters>
-        <div class="flex flex-wrap-reverse items-start justify-between gap-3">
+        <div class="account-toolbar flex flex-col gap-2">
           <AccountTableFilters
+            class="order-2"
             v-model:searchQuery="params.search"
             :filters="params"
             :groups="groups"
@@ -12,6 +13,7 @@
             @update:searchQuery="debouncedReload"
           />
           <AccountTableActions
+            class="order-1"
             :loading="loading"
             @refresh="handleManualRefresh"
             @create="showCreate = true"
@@ -24,7 +26,7 @@
                     showAutoRefreshDropdown = !showAutoRefreshDropdown;
                     showAccountToolsDropdown = false
                   "
-                  class="btn btn-secondary px-2 md:px-3"
+                  class="btn btn-secondary h-9 px-2 py-1.5 md:px-3"
                   :title="t('admin.accounts.autoRefresh')"
                 >
                   <Icon name="refresh" size="sm" :class="[autoRefreshEnabled ? 'animate-spin' : '']" />
@@ -67,7 +69,7 @@
                 <button
                   ref="accountToolsTriggerRef"
                   @click="toggleAccountToolsDropdown"
-                  class="btn btn-secondary px-2 md:px-3"
+                  class="btn btn-secondary h-9 px-2 py-1.5 md:px-3"
                   :title="t('admin.accounts.moreActions')"
                   :aria-expanded="showAccountToolsDropdown"
                 >
@@ -140,10 +142,33 @@
                           <span class="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
                             {{ t('admin.accounts.viewColumns') }}
                           </span>
-                          <Icon name="grid" size="sm" class="text-gray-400" />
+                          <div class="inline-flex rounded-md bg-gray-100 p-0.5 dark:bg-dark-700">
+                            <button
+                              :class="[
+                                'rounded px-2 py-1 text-xs font-medium transition-colors',
+                                isCompactColumnPreset
+                                  ? 'bg-white text-primary-700 shadow-sm dark:bg-dark-600 dark:text-primary-300'
+                                  : 'text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white'
+                              ]"
+                              @click="applyColumnPreset('compact')"
+                            >
+                              {{ t('admin.accounts.compactColumns') }}
+                            </button>
+                            <button
+                              :class="[
+                                'rounded px-2 py-1 text-xs font-medium transition-colors',
+                                isAllColumnPreset
+                                  ? 'bg-white text-primary-700 shadow-sm dark:bg-dark-600 dark:text-primary-300'
+                                  : 'text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white'
+                              ]"
+                              @click="applyColumnPreset('all')"
+                            >
+                              {{ t('admin.accounts.allColumns') }}
+                            </button>
+                          </div>
                         </div>
                       </div>
-                      <div class="grid grid-cols-1 gap-1">
+                      <div class="grid grid-cols-2 gap-1">
                         <button
                           v-for="col in toggleableColumns"
                           :key="col.key"
@@ -191,7 +216,11 @@
           @select-all-results="handleSelectAllResults"
           @toggle-schedulable="handleBulkToggleSchedulable"
         />
-        <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div
+          ref="accountTableRef"
+          class="account-table-shell flex min-h-0 flex-1 flex-col overflow-hidden"
+          :class="{ 'account-table-expanded': isExpandedColumnLayout }"
+        >
         <DataTable
           ref="dataTableRef"
           :columns="cols"
@@ -203,7 +232,7 @@
           default-sort-key="name"
           default-sort-order="asc"
           :sort-storage-key="ACCOUNT_SORT_STORAGE_KEY"
-          :estimate-row-height="156"
+          :estimate-row-height="isExpandedColumnLayout ? 88 : 72"
           :overscan="5"
           :virtualize-threshold="50"
         >
@@ -223,7 +252,7 @@
             <span class="font-mono text-xs text-gray-500 dark:text-gray-400">#{{ value }}</span>
           </template>
           <template #cell-name="{ row, value }">
-            <div class="flex flex-col">
+            <div class="flex min-w-0 flex-col gap-0.5">
               <HelpTooltip
                 v-if="accountHomepageUrl(row)"
                 :content="accountHomepageUrl(row)"
@@ -235,16 +264,17 @@
                     :href="accountHomepageUrl(row)"
                     target="_blank"
                     rel="noopener noreferrer"
-                    class="border-b border-dotted border-gray-300 font-medium text-gray-900 dark:border-dark-600 dark:text-white"
+                    class="block max-w-[15rem] truncate border-b border-dotted border-gray-300 font-medium text-gray-900 dark:border-dark-600 dark:text-white"
+                    :title="String(value)"
                   >
                     {{ value }}
                   </a>
                 </template>
               </HelpTooltip>
-              <span v-else class="font-medium text-gray-900 dark:text-white">{{ value }}</span>
+              <span v-else class="block max-w-[15rem] truncate font-medium text-gray-900 dark:text-white" :title="String(value)">{{ value }}</span>
               <span
-                v-if="accountDisplayEmail(row)"
-                class="text-xs text-gray-500 dark:text-gray-400 truncate max-w-[200px]"
+                v-if="accountDisplayEmail(row) && accountDisplayEmail(row) !== value"
+                class="max-w-[15rem] truncate text-xs text-gray-500 dark:text-gray-400"
                 :title="accountDisplayEmail(row) + (row.parent_chatgpt_account_id ? ' · ' + row.parent_chatgpt_account_id : '')"
               >
                 {{ accountDisplayEmail(row) }}
@@ -304,7 +334,7 @@
             />
           </template>
           <template #cell-groups="{ row }">
-            <AccountGroupsCell :groups="row.groups" :max-display="4" />
+            <AccountGroupsCell :groups="row.groups" :max-display="isExpandedColumnLayout ? 2 : 4" />
           </template>
           <template #header-usage="{ column }">
             <div class="flex items-center">
@@ -318,6 +348,7 @@
               :today-stats="todayStatsByAccountId[String(row.id)] ?? null"
               :today-stats-loading="todayStatsLoading"
               :manual-refresh-token="usageManualRefreshToken"
+              :compact="isExpandedColumnLayout"
             />
           </template>
           <template #cell-proxy="{ row }">
@@ -424,18 +455,30 @@
             </div>
           </template>
           <template #cell-actions="{ row }">
-            <div class="flex items-center gap-1">
-              <button @click="handleEdit(row)" class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-700 dark:hover:text-primary-400">
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>
-                <span class="text-xs">{{ t('common.edit') }}</span>
+            <div class="flex items-center justify-end gap-1">
+              <button
+                @click="handleEdit(row)"
+                class="account-icon-action hover:text-primary-600 dark:hover:text-primary-400"
+                :aria-label="t('common.edit')"
+                :title="t('common.edit')"
+              >
+                <Icon name="edit" size="sm" />
               </button>
-              <button @click="handleDelete(row)" class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400">
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>
-                <span class="text-xs">{{ t('common.delete') }}</span>
+              <button
+                @click="handleDelete(row)"
+                class="account-icon-action hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
+                :aria-label="t('common.delete')"
+                :title="t('common.delete')"
+              >
+                <Icon name="trash" size="sm" />
               </button>
-              <button @click="openMenu(row, $event)" class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:hover:bg-dark-700 dark:hover:text-white">
-                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM12.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM18.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0z" /></svg>
-                <span class="text-xs">{{ t('common.more') }}</span>
+              <button
+                @click="openMenu(row, $event)"
+                class="account-icon-action hover:text-gray-900 dark:hover:text-white"
+                :aria-label="t('common.more')"
+                :title="t('common.more')"
+              >
+                <Icon name="more" size="sm" />
               </button>
             </div>
           </template>
@@ -618,7 +661,7 @@ const accountToolsDropdownPosition = reactive({
   top: null as number | null,
   bottom: null as number | null,
   left: 16,
-  width: 320,
+  width: 480,
   maxHeight: 0
 })
 const accountToolsDropdownStyle = computed(() => ({
@@ -628,11 +671,24 @@ const accountToolsDropdownStyle = computed(() => ({
   width: `${accountToolsDropdownPosition.width}px`
 }))
 const hiddenColumns = reactive<Set<string>>(new Set())
-const DEFAULT_HIDDEN_COLUMNS = ['today_stats', 'proxy', 'notes', 'priority', 'scheduler_score', 'rate_multiplier']
+const DEFAULT_HIDDEN_COLUMNS = [
+  'today_stats',
+  'usage',
+  'proxy',
+  'notes',
+  'priority',
+  'scheduler_score',
+  'rate_multiplier',
+  'upstream_billing_rate',
+  'last_used_at',
+  'created_at',
+  'expires_at'
+]
 const HIDDEN_COLUMNS_KEY = 'account-hidden-columns'
-// One-time migration: hide scheduler score for existing admins too, because showing it opt-ins to heavy backend scoring.
+// One-time migration: move existing admins to the compact operational view.
+// Every hidden detail remains available from the column picker.
 const HIDDEN_COLUMNS_VERSION_KEY = 'account-hidden-columns-version'
-const HIDDEN_COLUMNS_CURRENT_VERSION = 'scheduler-score-hidden-by-default'
+const HIDDEN_COLUMNS_CURRENT_VERSION = 'compact-account-table-v1'
 
 // Sorting settings
 const ACCOUNT_SORT_STORAGE_KEY = 'account-table-sort'
@@ -789,9 +845,11 @@ const loadSavedColumns = () => {
       parsed.forEach(key => {
         hiddenColumns.add(key)
       })
-      // Older saved column layouts may have scheduler_score visible; migrate them to the new safe default once.
+      // Older layouts accumulated detail columns and forced routine account work into horizontal scrolling.
       if (localStorage.getItem(HIDDEN_COLUMNS_VERSION_KEY) !== HIDDEN_COLUMNS_CURRENT_VERSION) {
-        hiddenColumns.add('scheduler_score')
+        DEFAULT_HIDDEN_COLUMNS.forEach(key => {
+          hiddenColumns.add(key)
+        })
         localStorage.setItem(HIDDEN_COLUMNS_KEY, JSON.stringify([...hiddenColumns]))
         localStorage.setItem(HIDDEN_COLUMNS_VERSION_KEY, HIDDEN_COLUMNS_CURRENT_VERSION)
       }
@@ -892,6 +950,21 @@ const toggleColumn = (key: string) => {
       console.error('Failed to reload accounts after toggling scheduler score column:', error)
     })
   }
+}
+
+const applyColumnPreset = (preset: 'compact' | 'all') => {
+  hiddenColumns.clear()
+  if (preset === 'compact') {
+    DEFAULT_HIDDEN_COLUMNS.forEach(key => hiddenColumns.add(key))
+  }
+  saveColumnsToStorage()
+  refreshTodayStatsBatch().catch((error) => {
+    console.error('Failed to load account today stats after applying column preset:', error)
+  })
+  syncAccountListDerivedParams()
+  load().catch((error) => {
+    console.error('Failed to reload accounts after applying column preset:', error)
+  })
 }
 
 const isColumnVisible = (key: string) => !hiddenColumns.has(key)
@@ -1238,7 +1311,8 @@ const updateAccountToolsDropdownPosition = () => {
   const position = getFloatingPanelPosition(
     trigger.getBoundingClientRect(),
     document.documentElement.clientWidth || window.innerWidth,
-    window.innerHeight
+    window.innerHeight,
+    { maxWidth: 480, maxHeightRatio: 0.82, minComfortableHeight: 320 }
   )
   Object.assign(accountToolsDropdownPosition, position)
 }
@@ -1432,30 +1506,30 @@ function getAntigravityTierClass(row: any): string {
 // All available columns
 const allColumns = computed(() => {
   const c = [
-    { key: 'select', label: '', sortable: false },
-    { key: 'name', label: t('admin.accounts.columns.name'), sortable: true },
-    { key: 'id', label: t('admin.accounts.columns.id'), sortable: true },
-    { key: 'platform_type', label: t('admin.accounts.columns.platformType'), sortable: false },
-    { key: 'capacity', label: t('admin.accounts.columns.capacity'), sortable: false },
-    { key: 'status', label: t('admin.accounts.columns.status'), sortable: true },
-    { key: 'schedulable', label: t('admin.accounts.columns.schedulable'), sortable: true },
-    { key: 'today_stats', label: t('admin.accounts.columns.todayStats'), sortable: false }
+    { key: 'select', label: '', sortable: false, class: 'w-11 min-w-11 text-center' },
+    { key: 'name', label: t('admin.accounts.columns.name'), sortable: true, class: 'w-44 min-w-44 max-w-44' },
+    { key: 'id', label: t('admin.accounts.columns.id'), sortable: true, class: 'w-14 min-w-14' },
+    { key: 'platform_type', label: t('admin.accounts.columns.platformType'), sortable: false, class: 'w-36 min-w-36' },
+    { key: 'capacity', label: t('admin.accounts.columns.capacity'), sortable: false, class: 'w-[76px] min-w-[76px] text-center' },
+    { key: 'status', label: t('admin.accounts.columns.status'), sortable: true, class: 'w-[72px] min-w-[72px]' },
+    { key: 'schedulable', label: t('admin.accounts.columns.schedulable'), sortable: true, class: 'w-16 min-w-16 text-center' },
+    { key: 'today_stats', label: t('admin.accounts.columns.todayStats'), sortable: false, class: 'account-column-divider w-48 min-w-48' }
   ]
   if (!authStore.isSimpleMode) {
-    c.push({ key: 'groups', label: t('admin.accounts.columns.groups'), sortable: false })
+    c.push({ key: 'groups', label: t('admin.accounts.columns.groups'), sortable: false, class: 'w-24 min-w-24 max-w-24' })
   }
-  c.push({ key: 'usage', label: t('admin.accounts.columns.usageWindows'), sortable: false })
+  c.push({ key: 'usage', label: t('admin.accounts.columns.usageWindows'), sortable: false, class: 'w-80 min-w-80' })
   c.push(
-    { key: 'proxy', label: t('admin.accounts.columns.proxy'), sortable: false },
-    { key: 'priority', label: t('admin.accounts.columns.priority'), sortable: true },
-    { key: 'scheduler_score', label: t('admin.accounts.columns.schedulerScore'), sortable: false },
-    { key: 'rate_multiplier', label: t('admin.accounts.columns.billingRateMultiplier'), sortable: true },
-    { key: 'upstream_billing_rate', label: t('admin.accounts.columns.upstreamBillingRate'), sortable: true },
-    { key: 'last_used_at', label: t('admin.accounts.columns.lastUsed'), sortable: true },
-    { key: 'created_at', label: t('admin.accounts.columns.createdAt'), sortable: true },
-    { key: 'expires_at', label: t('admin.accounts.columns.expiresAt'), sortable: true },
-    { key: 'notes', label: t('admin.accounts.columns.notes'), sortable: false },
-    { key: 'actions', label: t('admin.accounts.columns.actions'), sortable: false }
+    { key: 'proxy', label: t('admin.accounts.columns.proxy'), sortable: false, class: 'w-36 min-w-36' },
+    { key: 'priority', label: t('admin.accounts.columns.priority'), sortable: true, class: 'w-16 min-w-16' },
+    { key: 'scheduler_score', label: t('admin.accounts.columns.schedulerScore'), sortable: false, class: 'w-36 min-w-36' },
+    { key: 'rate_multiplier', label: t('admin.accounts.columns.billingRateMultiplier'), sortable: true, class: 'account-column-divider w-24 min-w-24' },
+    { key: 'upstream_billing_rate', label: t('admin.accounts.columns.upstreamBillingRate'), sortable: true, class: 'w-36 min-w-36' },
+    { key: 'last_used_at', label: t('admin.accounts.columns.lastUsed'), sortable: true, class: 'account-column-divider w-28 min-w-28' },
+    { key: 'created_at', label: t('admin.accounts.columns.createdAt'), sortable: true, class: 'w-36 min-w-36' },
+    { key: 'expires_at', label: t('admin.accounts.columns.expiresAt'), sortable: true, class: 'w-36 min-w-36' },
+    { key: 'notes', label: t('admin.accounts.columns.notes'), sortable: false, class: 'w-36 min-w-36' },
+    { key: 'actions', label: t('admin.accounts.columns.actions'), sortable: false, class: 'w-28 min-w-28 text-right' }
   )
   return c
 })
@@ -1464,6 +1538,16 @@ const allColumns = computed(() => {
 const toggleableColumns = computed(() =>
   allColumns.value.filter(col => col.key !== 'select' && col.key !== 'name' && col.key !== 'actions')
 )
+const isAllColumnPreset = computed(() =>
+  toggleableColumns.value.every(col => !hiddenColumns.has(col.key))
+)
+const isCompactColumnPreset = computed(() =>
+  toggleableColumns.value.every(col =>
+    DEFAULT_HIDDEN_COLUMNS.includes(col.key)
+      ? hiddenColumns.has(col.key)
+      : !hiddenColumns.has(col.key)
+  )
+)
 
 // Filtered columns based on visibility
 const cols = computed(() =>
@@ -1471,6 +1555,7 @@ const cols = computed(() =>
     col.key === 'select' || col.key === 'name' || col.key === 'actions' || !hiddenColumns.has(col.key)
   )
 )
+const isExpandedColumnLayout = computed(() => cols.value.length > 11)
 
 const handleEdit = (a: Account) => { edAcc.value = a; showEdit.value = true }
 const openMenu = (a: Account, e: MouseEvent) => {
@@ -2211,6 +2296,63 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.account-page-layout {
+  gap: 0.75rem;
+}
+
+.account-table-shell :deep(table) {
+  width: 100%;
+  min-width: 57.25rem;
+  table-layout: fixed;
+}
+
+.account-table-shell :deep(.table-wrapper) {
+  --select-col-width: 2.75rem;
+}
+
+.account-table-expanded :deep(table) {
+  width: 155.5rem;
+  min-width: 155.5rem;
+}
+
+.account-table-shell :deep(th),
+.account-table-shell :deep(td) {
+  box-sizing: border-box;
+  padding: 0.625rem 0.75rem !important;
+  vertical-align: middle;
+}
+
+.account-table-shell :deep(thead th) {
+  height: 2.75rem;
+  white-space: nowrap;
+}
+
+.account-table-shell :deep(tbody tr:not([aria-hidden='true'])) {
+  height: 4.5rem;
+}
+
+.account-table-expanded :deep(th),
+.account-table-expanded :deep(td) {
+  padding-left: 0.5rem !important;
+  padding-right: 0.5rem !important;
+}
+
+.account-table-expanded :deep(tbody tr:not([aria-hidden='true'])) {
+  height: 5.5rem;
+}
+
+.account-table-shell :deep(.account-column-divider) {
+  border-left: 1px solid rgb(229 231 235);
+}
+
+:global(.dark) .account-table-shell :deep(.account-column-divider) {
+  border-left-color: rgb(55 65 81);
+}
+
+.account-icon-action {
+  @apply inline-flex h-8 w-8 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-1 dark:hover:bg-dark-700;
+}
+
 .account-tools-menu-item {
   @apply flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-dark-700;
 }
