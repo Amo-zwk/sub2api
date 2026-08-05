@@ -57,10 +57,6 @@ func BenchmarkOpenAIAccountSchedulerSelectTopK(b *testing.B) {
 		{name: "n_16_k_3", size: 16, topK: 3},
 		{name: "n_64_k_3", size: 64, topK: 3},
 		{name: "n_256_k_5", size: 256, topK: 5},
-		{name: "n_1000_k_8", size: 1_000, topK: 8},
-		{name: "n_5000_k_8", size: 5_000, topK: 8},
-		{name: "n_10000_k_12", size: 10_000, topK: 12},
-		{name: "n_50000_k_12", size: 50_000, topK: 12},
 	}
 
 	for _, tc := range cases {

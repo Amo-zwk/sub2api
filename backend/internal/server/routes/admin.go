@@ -102,9 +102,6 @@ func RegisterAdminRoutes(
 		// 定时测试计划
 		registerScheduledTestRoutes(admin, h)
 
-		// OpenAI account health and self-healing controller
-		registerAccountHealthRoutes(admin, h)
-
 		// 渠道管理
 		registerChannelRoutes(admin, h)
 
@@ -122,18 +119,6 @@ func RegisterAdminRoutes(
 
 		// 操作审计日志
 		registerAuditLogRoutes(admin, h, stepUpAuth)
-	}
-}
-
-func registerAccountHealthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
-	health := admin.Group("/account-health")
-	{
-		health.GET("/summary", h.Admin.AccountHealth.GetSummary)
-		health.GET("/accounts", h.Admin.AccountHealth.List)
-		health.GET("/settings", h.Admin.AccountHealth.GetSettings)
-		health.PUT("/settings", h.Admin.AccountHealth.UpdateSettings)
-		health.POST("/run", h.Admin.AccountHealth.RunNow)
-		health.GET("/events", h.Admin.AccountHealth.Events)
 	}
 }
 

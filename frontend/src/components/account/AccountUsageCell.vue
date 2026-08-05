@@ -1,9 +1,5 @@
 <template>
-  <div
-    ref="rootRef"
-    v-if="showUsageWindows"
-    :class="{ 'account-usage-cell--compact': props.compact }"
-  >
+  <div ref="rootRef" v-if="showUsageWindows">
     <!-- Anthropic OAuth and Setup Token accounts: fetch real usage data -->
     <template
       v-if="
@@ -124,10 +120,7 @@
 
     <!-- OpenAI OAuth accounts: single source from /usage API -->
     <template v-else-if="account.platform === 'openai' && account.type === 'oauth'">
-      <div
-        v-if="hasOpenAIUsageFallback"
-        :class="props.compact ? 'grid grid-cols-2 items-start gap-x-2 gap-y-1' : 'space-y-1'"
-      >
+      <div v-if="hasOpenAIUsageFallback" class="space-y-1">
         <UsageProgressBar
           v-if="usageInfo?.five_hour"
           label="5h"
@@ -151,7 +144,7 @@
           refresh button is rendered via the pre-actions slot so the user sees a
           single row of related buttons instead of two stacked rows.
         -->
-        <OpenAIQuotaResetCell :account="account" :class="{ 'col-span-2': props.compact }">
+        <OpenAIQuotaResetCell :account="account">
           <template #pre-actions>
             <button
               type="button"
@@ -653,13 +646,11 @@ const props = withDefaults(
     todayStats?: WindowStats | null
     todayStatsLoading?: boolean
     manualRefreshToken?: number
-    compact?: boolean
   }>(),
   {
     todayStats: null,
     todayStatsLoading: false,
-    manualRefreshToken: 0,
-    compact: false
+    manualRefreshToken: 0
   }
 )
 

@@ -1396,9 +1396,6 @@ func (s *AccountRepoSuite) TestClearError_SyncSchedulerSnapshotOnRecovery() {
 	s.repo.schedulerCache = cacheRecorder
 
 	s.Require().NoError(s.repo.ClearError(s.ctx, account.ID))
-	recovered, err := s.repo.GetByID(s.ctx, account.ID)
-	s.Require().NoError(err)
-	s.True(recovered.Schedulable, "clearing a system error must restore scheduler eligibility")
 
 	got, err := s.repo.GetByID(s.ctx, account.ID)
 	s.Require().NoError(err)

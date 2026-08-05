@@ -272,13 +272,6 @@ func TestContentModerationRuntimeSnapshotRefreshFailureKeepsStaleConfig(t *testi
 	require.NoError(t, err)
 	require.True(t, decision.Blocked)
 
-	// Windows wall-clock resolution can be coarser than the nanosecond test TTL.
-	// Backdate the snapshot so this test deterministically exercises refresh.
-	current := svc.runtimeSnapshot.Load()
-	require.NotNil(t, current)
-	expired := *current
-	expired.loadedAt = time.Now().Add(-time.Second)
-	svc.runtimeSnapshot.Store(&expired)
 	repo.failMultiple(errors.New("database unavailable"))
 	decision, err = svc.Check(context.Background(), input)
 	require.NoError(t, err)

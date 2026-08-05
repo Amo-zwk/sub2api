@@ -64,7 +64,6 @@ type AccountHandler struct {
 	grokImportProber        grokImportProber
 	upstreamBillingProbe    *service.UpstreamBillingProbeService
 	ollamaCloudUsage        *service.OllamaCloudUsageService
-	accountHealth           *service.AccountHealthController
 }
 
 // SetUpstreamBillingProbeService attaches the optional remote billing probe service.
@@ -74,19 +73,6 @@ func (h *AccountHandler) SetUpstreamBillingProbeService(probe *service.UpstreamB
 
 func (h *AccountHandler) SetOllamaCloudUsageService(usage *service.OllamaCloudUsageService) {
 	h.ollamaCloudUsage = usage
-}
-
-func (h *AccountHandler) SetAccountHealthController(controller *service.AccountHealthController) {
-	h.accountHealth = controller
-}
-
-func (h *AccountHandler) notifyAccountHealth(ctx context.Context, accountIDs []int64, reset bool) {
-	if h.accountHealth == nil || len(accountIDs) == 0 {
-		return
-	}
-	if err := h.accountHealth.NotifyAccountsChanged(ctx, accountIDs, reset); err != nil {
-		slog.Warn("account_health_sync_failed", "account_ids", accountIDs, "reset", reset, "error", err)
-	}
 }
 
 // NewAccountHandler creates a new admin account handler
@@ -914,9 +900,6 @@ func (h *AccountHandler) Create(c *gin.Context) {
 	// 探测失败不影响账号创建响应。
 	h.scheduleOpenAIResponsesProbe(createdAccount)
 	h.scheduleGrokImportProbe(createdAccount)
-	if createdAccount != nil {
-		h.notifyAccountHealth(c.Request.Context(), []int64{createdAccount.ID}, true)
-	}
 	response.Success(c, result.Data)
 }
 
@@ -930,7 +913,6 @@ func (h *AccountHandler) Duplicate(c *gin.Context) {
 	}
 	actorScope := adminActorScope(c)
 
-	var duplicatedAccount *service.Account
 	result, err := executeAdminIdempotent(
 		c,
 		"admin.accounts.duplicate",
@@ -943,7 +925,6 @@ func (h *AccountHandler) Duplicate(c *gin.Context) {
 			if execErr != nil {
 				return nil, execErr
 			}
-			duplicatedAccount = account
 			return h.buildAccountResponseWithRuntime(ctx, account), nil
 		},
 	)
@@ -965,9 +946,6 @@ func (h *AccountHandler) Duplicate(c *gin.Context) {
 
 	if result != nil && result.Replayed {
 		c.Header("X-Idempotency-Replayed", "true")
-	}
-	if duplicatedAccount != nil {
-		h.notifyAccountHealth(c.Request.Context(), []int64{duplicatedAccount.ID}, true)
 	}
 	response.Success(c, result.Data)
 }
@@ -1036,7 +1014,6 @@ func (h *AccountHandler) Update(c *gin.Context) {
 	if len(req.Credentials) > 0 {
 		h.scheduleOpenAIResponsesProbe(account)
 	}
-	h.notifyAccountHealth(c.Request.Context(), []int64{accountID}, len(req.Credentials) > 0)
 
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
 }
@@ -1079,7 +1056,6 @@ func (h *AccountHandler) Delete(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	h.notifyAccountHealth(c.Request.Context(), []int64{accountID}, false)
 
 	response.Success(c, gin.H{"message": "Account deleted successfully"})
 }
@@ -1129,7 +1105,6 @@ func (h *AccountHandler) Test(c *gin.Context) {
 			_ = c.Error(err)
 		}
 	}
-	h.notifyAccountHealth(c.Request.Context(), []int64{accountID}, true)
 }
 
 // RecoverState handles unified recovery of recoverable account runtime state.
@@ -1158,7 +1133,6 @@ func (h *AccountHandler) RecoverState(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	h.notifyAccountHealth(c.Request.Context(), []int64{accountID}, true)
 
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
 }
@@ -1542,7 +1516,6 @@ func (h *AccountHandler) ClearError(c *gin.Context) {
 			log.Printf("[WARN] Failed to invalidate token cache for account %d: %v", accountID, invalidateErr)
 		}
 	}
-	h.notifyAccountHealth(c.Request.Context(), []int64{accountID}, true)
 
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
 }
@@ -1686,7 +1659,6 @@ func (h *AccountHandler) BatchDelete(c *gin.Context) {
 	sort.Slice(errorsByAccount, func(i, j int) bool {
 		return errorsByAccount[i].AccountID < errorsByAccount[j].AccountID
 	})
-	h.notifyAccountHealth(c.Request.Context(), successIDs, false)
 
 	response.Success(c, gin.H{
 		"total":       len(accountIDs),
@@ -1721,7 +1693,6 @@ func (h *AccountHandler) BatchClearError(c *gin.Context) {
 
 	var mu sync.Mutex
 	var successCount, failedCount int
-	successIDs := make([]int64, 0, len(req.AccountIDs))
 	var errors []gin.H
 
 	// 注意：所有 goroutine 必须 return nil，避免 errgroup cancel 其他并发任务
@@ -1749,7 +1720,6 @@ func (h *AccountHandler) BatchClearError(c *gin.Context) {
 
 			mu.Lock()
 			successCount++
-			successIDs = append(successIDs, accountID)
 			mu.Unlock()
 			return nil
 		})
@@ -1759,7 +1729,6 @@ func (h *AccountHandler) BatchClearError(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	h.notifyAccountHealth(ctx, successIDs, true)
 
 	response.Success(c, gin.H{
 		"total":   len(req.AccountIDs),
@@ -1806,7 +1775,6 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 
 	var mu sync.Mutex
 	var successCount, failedCount int
-	successIDs := make([]int64, 0, len(accounts))
 	var errors []gin.H
 	var warnings []gin.H
 
@@ -1838,7 +1806,6 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 				})
 			} else {
 				successCount++
-				successIDs = append(successIDs, acc.ID)
 				if warning != "" {
 					warnings = append(warnings, gin.H{
 						"account_id": acc.ID,
@@ -1855,7 +1822,6 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	h.notifyAccountHealth(ctx, successIDs, true)
 
 	response.Success(c, gin.H{
 		"total":    len(req.AccountIDs),
@@ -1890,7 +1856,6 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 		// 收集需要异步设置隐私的 OAuth 账号
 		var antigravityPrivacyAccounts []*service.Account
 		var openaiPrivacyAccounts []*service.Account
-		healthAccountIDs := make([]int64, 0, len(req.Accounts))
 
 		for _, item := range req.Accounts {
 			if item.RateMultiplier != nil && *item.RateMultiplier < 0 {
@@ -1945,7 +1910,6 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 			// OpenAI APIKey 账号异步探测 /v1/responses 能力。
 			h.scheduleOpenAIResponsesProbe(account)
 			h.scheduleGrokImportProbe(account)
-			healthAccountIDs = append(healthAccountIDs, account.ID)
 			success++
 			results = append(results, gin.H{
 				"name":    item.Name,
@@ -1985,7 +1949,6 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 			}()
 		}
 
-		h.notifyAccountHealth(ctx, healthAccountIDs, true)
 		return gin.H{
 			"success": success,
 			"failed":  failed,
@@ -2073,7 +2036,6 @@ func (h *AccountHandler) BatchUpdateCredentials(c *gin.Context) {
 			"success":    true,
 		})
 	}
-	h.notifyAccountHealth(ctx, successIDs, true)
 
 	response.Success(c, gin.H{
 		"success":     success,
@@ -2159,7 +2121,6 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	h.notifyAccountHealth(c.Request.Context(), result.SuccessIDs, len(req.Credentials) > 0)
 
 	response.Success(c, result)
 }

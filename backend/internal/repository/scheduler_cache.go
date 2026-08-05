@@ -27,7 +27,6 @@ const (
 	schedulerRetiredPrefix         = "sched:retired:"
 	schedulerSnapshotPrefix        = "sched:"
 	schedulerLockPrefix            = "sched:lock:"
-	schedulerCursorPrefix          = "sched:cursor:"
 
 	defaultSchedulerSnapshotMGetChunkSize  = 128
 	defaultSchedulerSnapshotWriteChunkSize = 256
@@ -277,71 +276,6 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 		return nil, false, nil
 	}
 
-	accounts, complete, err := c.loadSnapshotAccounts(ctx, ids)
-	return accounts, complete, err
-}
-
-// GetSnapshotWindow reads only a bounded, circular slice from the active
-// snapshot. A stable cursor keeps session traffic deterministic; advance uses
-// an atomic Redis cursor to distribute stateless traffic across the pool.
-func (c *schedulerCache) GetSnapshotWindow(ctx context.Context, bucket service.SchedulerBucket, limit int, cursor uint64, advance bool) ([]*service.Account, int64, bool, error) {
-	if limit <= 0 {
-		return nil, 0, false, nil
-	}
-	readyVal, err := c.rdb.Get(ctx, schedulerBucketKey(schedulerReadyPrefix, bucket)).Result()
-	if err == redis.Nil || readyVal != "1" {
-		return nil, 0, false, nil
-	}
-	if err != nil {
-		return nil, 0, false, err
-	}
-	activeVal, err := c.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Result()
-	if err == redis.Nil {
-		return nil, 0, false, nil
-	}
-	if err != nil {
-		return nil, 0, false, err
-	}
-
-	snapshotKey := schedulerSnapshotKey(bucket, activeVal)
-	total, err := c.rdb.ZCard(ctx, snapshotKey).Result()
-	if err != nil {
-		return nil, 0, false, err
-	}
-	if total == 0 {
-		return nil, 0, false, nil
-	}
-	if int64(limit) > total {
-		limit = int(total)
-	}
-
-	var offset int64
-	if advance {
-		next, incrErr := c.rdb.IncrBy(ctx, schedulerBucketKey(schedulerCursorPrefix, bucket), int64(limit)).Result()
-		if incrErr != nil {
-			return nil, 0, false, incrErr
-		}
-		offset = (next - int64(limit)) % total
-	} else {
-		offset = int64(cursor % uint64(total))
-	}
-
-	ids, err := c.rdb.ZRange(ctx, snapshotKey, offset, offset+int64(limit)-1).Result()
-	if err != nil {
-		return nil, 0, false, err
-	}
-	if remaining := limit - len(ids); remaining > 0 {
-		wrapped, rangeErr := c.rdb.ZRange(ctx, snapshotKey, 0, int64(remaining)-1).Result()
-		if rangeErr != nil {
-			return nil, 0, false, rangeErr
-		}
-		ids = append(ids, wrapped...)
-	}
-	accounts, complete, err := c.loadSnapshotAccounts(ctx, ids)
-	return accounts, total, complete, err
-}
-
-func (c *schedulerCache) loadSnapshotAccounts(ctx context.Context, ids []string) ([]*service.Account, bool, error) {
 	keys := make([]string, 0, len(ids))
 	lastUsedKeys := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -371,6 +305,7 @@ func (c *schedulerCache) loadSnapshotAccounts(ctx context.Context, ids []string)
 		}
 		accounts = append(accounts, account)
 	}
+
 	return accounts, true, nil
 }
 

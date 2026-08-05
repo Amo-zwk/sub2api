@@ -119,10 +119,3 @@ type SchedulerCache interface {
 	// SetOutboxWatermark 保存 outbox 水位。
 	SetOutboxWatermark(ctx context.Context, id int64) error
 }
-
-// SchedulerSnapshotWindowCache is an optional hot-path capability. Callers
-// must fall back to SchedulerCache.GetSnapshot when it is not implemented or
-// when the bounded snapshot is unavailable.
-type SchedulerSnapshotWindowCache interface {
-	GetSnapshotWindow(ctx context.Context, bucket SchedulerBucket, limit int, cursor uint64, advance bool) (accounts []*Account, total int64, hit bool, err error)
-}
