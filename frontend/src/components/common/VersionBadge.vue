@@ -673,7 +673,6 @@ const dropdownRef = ref<HTMLElement | null>(null)
 const loading = computed(() => appStore.versionLoading)
 const currentVersion = computed(() => appStore.currentVersion || props.version || '')
 const latestVersion = computed(() => appStore.latestVersion)
-const hasUpdate = computed(() => appStore.hasUpdate)
 const releaseInfo = computed(() => appStore.releaseInfo)
 const buildType = computed(() => appStore.buildType)
 
@@ -730,6 +729,8 @@ const activeManualCommand = computed(() =>
 
 // Only show update check for release builds (binary/docker deployment)
 const isReleaseBuild = computed(() => buildType.value === 'release')
+// Custom forks must not advertise or apply upstream binary updates.
+const hasUpdate = computed(() => isReleaseBuild.value && appStore.hasUpdate)
 
 function toggleDropdown() {
   dropdownOpen.value = !dropdownOpen.value
